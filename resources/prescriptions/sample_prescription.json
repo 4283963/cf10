@@ -1,0 +1,65 @@
+{
+  "prescriptionId": "RX20260613001",
+  "patientName": "张三",
+  "patientId": "P20240001",
+  "doctorName": "李中医",
+  "department": "中医内科",
+  "createTime": "2026-06-13 10:30:00",
+  "dosageCount": 3,
+  "items": [
+    {
+      "binId": 0,
+      "medicineName": "当归",
+      "medicineCode": "DG",
+      "dosageGrams": 10.0
+    },
+    {
+      "binId": 1,
+      "medicineName": "黄芪",
+      "medicineCode": "HQ",
+      "dosageGrams": 15.0
+    },
+    {
+      "binId": 2,
+      "medicineName": "川芎",
+      "medicineCode": "CX",
+      "dosageGrams": 6.0
+    },
+    {
+      "binId": 3,
+      "medicineName": "白芍",
+      "medicineCode": "BS",
+      "dosageGrams": 10.0
+    },
+    {
+      "binId": 4,
+      "medicineName": "熟地黄",
+      "medicineCode": "SDH",
+      "dosageGrams": 12.0
+    },
+    {
+      "binId": 10,
+      "medicineName": "甘草",
+      "medicineCode": "GC",
+      "dosageGrams": 3.0
+    },
+    {
+      "binId": 11,
+      "medicineName": "人参",
+      "medicineCode": "RS",
+      "dosageGrams": 6.0
+    },
+    {
+      "binId": 18,
+      "medicineName": "生姜",
+      "medicineCode": "SJ",
+      "dosageGrams": 3.0
+    },
+    {
+      "binId": 19,
+      "medicineName": "大枣",
+      "medicineCode": "DZ",
+      "dosageGrams": 5.0
+    }
+  ]
+}
