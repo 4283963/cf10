@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <thread>
 #include <condition_variable>
+#include <memory>
 
 #define DISPENSER_API extern "C" __attribute__((visibility("default")))
 
@@ -83,14 +84,16 @@ private:
     TCMDispenser& operator=(const TCMDispenser&) = delete;
     
     void dispenseWorkerThread(int taskId, Prescription prescription);
-    double precisionDispense(int binId, double targetGrams, std::atomic<bool>& shouldStop);
+    double precisionDispense(int binId, double targetGrams, std::shared_ptr<std::atomic<bool>> shouldStop);
     double calculatePulses(double grams, double gramsPerPulse);
-    void dribbleFeed(int binId, double remainingGrams, std::atomic<bool>& shouldStop);
+    void dribbleFeed(int binId, double remainingGrams, std::shared_ptr<std::atomic<bool>> shouldStop);
+    
+    void cleanupTask(int taskId);
     
     mutable std::mutex m_mutex;
     std::unordered_map<int, MedicineBin> m_bins;
     std::unordered_map<int, std::thread> m_activeTasks;
-    std::unordered_map<int, std::atomic<bool>> m_taskStopFlags;
+    std::unordered_map<int, std::shared_ptr<std::atomic<bool>>> m_taskStopFlags;
     std::atomic<DispenserStatus> m_status;
     std::atomic<int> m_nextTaskId;
     std::string m_lastError;

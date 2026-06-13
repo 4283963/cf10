@@ -1,0 +1,125 @@
+#ifndef JNI_STUB_H
+#define JNI_STUB_H
+
+#include <cstdint>
+
+typedef uint8_t jboolean;
+typedef int8_t jbyte;
+typedef uint16_t jchar;
+typedef int16_t jshort;
+typedef int32_t jint;
+typedef int64_t jlong;
+typedef float jfloat;
+typedef double jdouble;
+typedef jint jsize;
+
+#define JNI_FALSE 0
+#define JNI_TRUE 1
+
+#define JNIEXPORT
+#define JNICALL
+
+class _jobject {};
+class _jclass : public _jobject {};
+class _jstring : public _jobject {};
+class _jarray : public _jobject {};
+class _jobjectArray : public _jarray {};
+
+typedef _jobject* jobject;
+typedef _jclass* jclass;
+typedef _jstring* jstring;
+typedef _jarray* jarray;
+typedef _jobjectArray* jobjectArray;
+typedef jobject jthrowable;
+typedef jarray jbooleanArray;
+typedef jarray jbyteArray;
+typedef jarray jcharArray;
+typedef jarray jshortArray;
+typedef jarray jintArray;
+typedef jarray jlongArray;
+typedef jarray jfloatArray;
+typedef jarray jdoubleArray;
+typedef void* jweak;
+typedef void* jfieldID;
+typedef void* jmethodID;
+
+#define JNI_COMMIT 1
+#define JNI_ABORT 2
+
+struct JNINativeInterface_ {
+    void* reserved0;
+    void* reserved1;
+    void* reserved2;
+    void* reserved3;
+
+    jint (*GetVersion)(JNIEnv* env);
+
+    jclass (*DefineClass)(JNIEnv* env, const char* name, jobject loader, const jbyte* buf, jsize len);
+    jclass (*FindClass)(JNIEnv* env, const char* name);
+
+    void* reserved4_1[80];
+
+    jfieldID (*GetFieldID)(JNIEnv* env, jclass clazz, const char* name, const char* sig);
+
+    jobject (*GetObjectField)(JNIEnv* env, jobject obj, jfieldID fieldID);
+    jboolean (*GetBooleanField)(JNIEnv* env, jobject obj, jfieldID fieldID);
+    jbyte (*GetByteField)(JNIEnv* env, jobject obj, jfieldID fieldID);
+    jchar (*GetCharField)(JNIEnv* env, jobject obj, jfieldID fieldID);
+    jshort (*GetShortField)(JNIEnv* env, jobject obj, jfieldID fieldID);
+    jint (*GetIntField)(JNIEnv* env, jobject obj, jfieldID fieldID);
+    jlong (*GetLongField)(JNIEnv* env, jobject obj, jfieldID fieldID);
+    jfloat (*GetFloatField)(JNIEnv* env, jobject obj, jfieldID fieldID);
+    jdouble (*GetDoubleField)(JNIEnv* env, jobject obj, jfieldID fieldID);
+
+    void* reserved4_2[50];
+
+    jstring (*NewStringUTF)(JNIEnv* env, const char* bytes);
+    const char* (*GetStringUTFChars)(JNIEnv* env, jstring str, jboolean* isCopy);
+    void (*ReleaseStringUTFChars)(JNIEnv* env, jstring str, const char* chars);
+    jsize (*GetStringUTFLength)(JNIEnv* env, jstring str);
+
+    jsize (*GetArrayLength)(JNIEnv* env, jarray array);
+
+    jobjectArray (*NewObjectArray)(JNIEnv* env, jsize len, jclass clazz, jobject init);
+    jobject (*GetObjectArrayElement)(JNIEnv* env, jobjectArray array, jsize index);
+    void (*SetObjectArrayElement)(JNIEnv* env, jobjectArray array, jsize index, jobject val);
+
+    jobject (*NewObject)(JNIEnv* env, jclass clazz, jmethodID methodID, ...);
+    jmethodID (*GetMethodID)(JNIEnv* env, jclass clazz, const char* name, const char* sig);
+
+    void (*DeleteLocalRef)(JNIEnv* env, jobject ref);
+    jint (*PushLocalFrame)(JNIEnv* env, jint capacity);
+    jobject (*PopLocalFrame)(JNIEnv* env, jobject result);
+
+    jint (*EnsureLocalCapacity)(JNIEnv* env, jint capacity);
+
+    jboolean (*IsSameObject)(JNIEnv* env, jobject ref1, jobject ref2);
+    jobject (*NewGlobalRef)(JNIEnv* env, jobject lobj);
+    void (*DeleteGlobalRef)(JNIEnv* env, jobject gref);
+
+    void (*ExceptionDescribe)(JNIEnv* env);
+    jboolean (*ExceptionCheck)(JNIEnv* env);
+    void (*ExceptionClear)(JNIEnv* env);
+};
+
+struct JNIEnv_ {
+    const struct JNINativeInterface_* functions;
+};
+typedef struct JNIEnv_ JNIEnv;
+
+typedef struct JavaVMOption_ {
+    char* optionString;
+    void* extraInfo;
+} JavaVMOption;
+
+typedef struct JavaVMInitArgs_ {
+    jint version;
+    jint nOptions;
+    JavaVMOption* options;
+    jboolean ignoreUnrecognized;
+} JavaVMInitArgs;
+
+struct JavaVM_;
+typedef struct JavaVM_ JavaVM;
+
+#endif

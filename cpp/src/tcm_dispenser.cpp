@@ -4,6 +4,18 @@
 #include <thread>
 #include <algorithm>
 #include <iostream>
+#include <fstream>
+#include <iomanip>
+
+// #region debug-point jni-mem-01
+#define DEBUG_LOG(msg) do { \
+    std::ofstream logfile("tcm_dispenser_debug.log", std::ios::app); \
+    auto now = std::chrono::system_clock::now(); \
+    std::time_t now_t = std::chrono::system_clock::to_time_t(now); \
+    logfile << std::put_time(std::localtime(&now_t), "%Y-%m-%d %H:%M:%S") \
+            << " [DEBUG] " << __func__ << ":" << __LINE__ << " " << msg << std::endl; \
+} while(0)
+// #endregion debug-point jni-mem-01
 
 namespace tcm {
 
@@ -62,11 +74,13 @@ bool TCMDispenser::initialize() {
 bool TCMDispenser::shutdown() {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (auto& kv : m_taskStopFlags) {
-        kv.second.store(true);
+        if (kv.second) {
+            kv.second->store(true);
+        }
     }
     for (auto& kv : m_activeTasks) {
         if (kv.second.joinable()) {
-            kv.second.join();
+            kv.second.detach();
         }
     }
     m_activeTasks.clear();
@@ -140,7 +154,7 @@ double TCMDispenser::calculatePulses(double grams, double gramsPerPulse) {
     return std::round(grams / gramsPerPulse);
 }
 
-double TCMDispenser::precisionDispense(int binId, double targetGrams, std::atomic<bool>& shouldStop) {
+double TCMDispenser::precisionDispense(int binId, double targetGrams, std::shared_ptr<std::atomic<bool>> shouldStop) {
     double dispensed = 0.0;
     double gramsPerPulse = 0.0;
     {
@@ -158,7 +172,7 @@ double TCMDispenser::precisionDispense(int binId, double targetGrams, std::atomi
     const double fineThreshold = targetGrams * 0.98;
     const double tolerance = targetGrams * 0.005 + SCALE_PRECISION;
 
-    while (!shouldStop.load() && dispensed < coarseThreshold) {
+    while (!shouldStop->load() && dispensed < coarseThreshold) {
         double remaining = coarseThreshold - dispensed;
         double pulses = calculatePulses(remaining * 0.5, gramsPerPulse);
         if (pulses < 1) pulses = 1;
@@ -180,7 +194,7 @@ double TCMDispenser::precisionDispense(int binId, double targetGrams, std::atomi
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 
-    while (!shouldStop.load() && dispensed < fineThreshold) {
+    while (!shouldStop->load() && dispensed < fineThreshold) {
         if (!sendStepperPulse(binId, 5, 1)) return dispensed;
         double actualOutput = 5 * gramsPerPulse * (0.95 + static_cast<double>(rand()) / RAND_MAX * 0.1);
         dispensed += actualOutput;
@@ -193,7 +207,7 @@ double TCMDispenser::precisionDispense(int binId, double targetGrams, std::atomi
         std::this_thread::sleep_for(std::chrono::milliseconds(15));
     }
 
-    while (!shouldStop.load() && (targetGrams - dispensed) > tolerance) {
+    while (!shouldStop->load() && (targetGrams - dispensed) > tolerance) {
         if (!sendStepperPulse(binId, 1, 1)) return dispensed;
         double actualOutput = gramsPerPulse * (0.95 + static_cast<double>(rand()) / RAND_MAX * 0.1);
         dispensed += actualOutput;
@@ -211,25 +225,47 @@ double TCMDispenser::precisionDispense(int binId, double targetGrams, std::atomi
 
 void TCMDispenser::dispenseWorkerThread(int taskId, Prescription prescription) {
     m_status = DispenserStatus::DISPENSING;
-    std::atomic<bool>& shouldStop = m_taskStopFlags[taskId];
+
+    std::shared_ptr<std::atomic<bool>> shouldStop;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_taskStopFlags.find(taskId);
+        if (it != m_taskStopFlags.end()) {
+            shouldStop = it->second;
+        } else {
+            m_status = DispenserStatus::ERROR;
+            m_lastError = "任务不存在: " + std::to_string(taskId);
+            return;
+        }
+    }
+
+    // #region debug-point jni-mem-02
+    DEBUG_LOG("Thread started for taskId=" << taskId 
+              << " shouldStop ptr=" << shouldStop.get()
+              << " use_count=" << shouldStop.use_count()
+              << " map bucket_count=" << m_taskStopFlags.bucket_count()
+              << " map size=" << m_taskStopFlags.size());
+    // #endregion debug-point jni-mem-02
 
     for (auto& task : prescription.tasks) {
-        if (shouldStop.load()) {
+        if (shouldStop->load()) {
             m_status = DispenserStatus::EMERGENCY_STOP;
             return;
         }
 
         task.dispensedGrams = precisionDispense(task.binId, task.targetGrams, shouldStop);
-        task.isCompleted = (!shouldStop.load() && task.dispensedGrams >= task.targetGrams * 0.995);
-        if (!task.isCompleted && !shouldStop.load()) {
+        task.isCompleted = (!shouldStop->load() && task.dispensedGrams >= task.targetGrams * 0.995);
+        if (!task.isCompleted && !shouldStop->load()) {
             task.hasError = true;
             task.errorMessage = m_lastError;
         }
     }
 
-    if (!shouldStop.load()) {
+    if (!shouldStop->load()) {
         m_status = DispenserStatus::IDLE;
     }
+
+    cleanupTask(taskId);
 }
 
 int TCMDispenser::startDispense(const Prescription& prescription) {
@@ -239,15 +275,46 @@ int TCMDispenser::startDispense(const Prescription& prescription) {
     }
 
     int taskId = m_nextTaskId.fetch_add(1);
-    m_taskStopFlags[taskId].store(false);
 
-    m_activeTasks[taskId] = std::thread(&TCMDispenser::dispenseWorkerThread, this, taskId, prescription);
+    // #region debug-point jni-mem-03
+    size_t bucket_count_before = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        bucket_count_before = m_taskStopFlags.bucket_count();
+    }
+    DEBUG_LOG("Before insert: taskId=" << taskId 
+              << " bucket_count=" << bucket_count_before
+              << " map size=" << m_taskStopFlags.size());
+    // #endregion debug-point jni-mem-03
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_taskStopFlags[taskId] = std::make_shared<std::atomic<bool>>(false);
+    }
+
+    // #region debug-point jni-mem-04
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        size_t bucket_count_after = m_taskStopFlags.bucket_count();
+        bool rehashed = (bucket_count_after != bucket_count_before);
+        DEBUG_LOG("After insert: taskId=" << taskId
+                  << " bucket_count=" << bucket_count_after
+                  << " REHASHED=" << (rehashed ? "YES (but safe with shared_ptr)" : "no"));
+    }
+    // #endregion debug-point jni-mem-04
+
+    std::thread t(&TCMDispenser::dispenseWorkerThread, this, taskId, prescription);
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_activeTasks[taskId] = std::move(t);
+    }
     m_activeTasks[taskId].detach();
 
     return taskId;
 }
 
 bool TCMDispenser::pauseDispense(int taskId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_taskStopFlags.find(taskId);
     if (it != m_taskStopFlags.end()) {
         m_status = DispenserStatus::PAUSED;
@@ -267,16 +334,31 @@ bool TCMDispenser::resumeDispense(int taskId) {
 bool TCMDispenser::emergencyStop() {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (auto& kv : m_taskStopFlags) {
-        kv.second.store(true);
+        if (kv.second) {
+            kv.second->store(true);
+        }
     }
     m_status = DispenserStatus::EMERGENCY_STOP;
     return true;
 }
 
 bool TCMDispenser::isTaskCompleted(int taskId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_activeTasks.find(taskId);
     if (it == m_activeTasks.end()) return true;
     return !it->second.joinable() || m_status.load() == DispenserStatus::IDLE;
+}
+
+void TCMDispenser::cleanupTask(int taskId) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_taskStopFlags.erase(taskId);
+    auto it = m_activeTasks.find(taskId);
+    if (it != m_activeTasks.end()) {
+        if (it->second.joinable()) {
+            it->second.detach();
+        }
+        m_activeTasks.erase(it);
+    }
 }
 
 }
@@ -298,7 +380,15 @@ JNIEXPORT jobjectArray JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_getAll
     std::vector<MedicineBin> bins = TCMDispenser::getInstance().getAllBinStatus();
 
     jclass binClass = env->FindClass("com/tcm/dispenser/model/MedicineBin");
+    if (binClass == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return nullptr;
+    }
     jmethodID constructor = env->GetMethodID(binClass, "<init>", "(ILjava/lang/String;Ljava/lang/String;DDDDZ)V");
+    if (constructor == nullptr) {
+        env->DeleteLocalRef(binClass);
+        return nullptr;
+    }
 
     jobjectArray result = env->NewObjectArray(static_cast<jsize>(bins.size()), binClass, nullptr);
 
@@ -317,6 +407,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_getAll
         env->DeleteLocalRef(binObj);
     }
 
+    env->DeleteLocalRef(binClass);
     return result;
 }
 
@@ -326,7 +417,15 @@ JNIEXPORT jobject JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_getBinStatu
     if (bin.id < 0) return nullptr;
 
     jclass binClass = env->FindClass("com/tcm/dispenser/model/MedicineBin");
+    if (binClass == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return nullptr;
+    }
     jmethodID constructor = env->GetMethodID(binClass, "<init>", "(ILjava/lang/String;Ljava/lang/String;DDDDZ)V");
+    if (constructor == nullptr) {
+        env->DeleteLocalRef(binClass);
+        return nullptr;
+    }
     jstring name = env->NewStringUTF(bin.name.c_str());
     jstring code = env->NewStringUTF(bin.code.c_str());
     jobject result = env->NewObject(binClass, constructor,
@@ -336,12 +435,21 @@ JNIEXPORT jobject JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_getBinStatu
         bin.isOnline ? JNI_TRUE : JNI_FALSE);
     env->DeleteLocalRef(name);
     env->DeleteLocalRef(code);
+    env->DeleteLocalRef(binClass);
     return result;
 }
 
 JNIEXPORT jint JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_startDispense
   (JNIEnv *env, jobject obj, jstring prescriptionId, jstring patientName, jobjectArray tasksArray) {
     Prescription prescription;
+
+    // #region debug-point jni-mem-05
+    DEBUG_LOG("JNI startDispense called");
+    if (tasksArray == nullptr) {
+        DEBUG_LOG("ERROR: tasksArray is NULL!");
+        return -1;
+    }
+    // #endregion debug-point jni-mem-05
 
     const char* pid = env->GetStringUTFChars(prescriptionId, nullptr);
     prescription.prescriptionId = pid;
@@ -352,12 +460,40 @@ JNIEXPORT jint JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_startDispense
     env->ReleaseStringUTFChars(patientName, pname);
 
     jclass taskClass = env->FindClass("com/tcm/dispenser/model/DispenseTask");
+
+    // #region debug-point jni-mem-06
+    DEBUG_LOG("FindClass returned taskClass=" << static_cast<void*>(taskClass));
+    if (taskClass == nullptr) {
+        DEBUG_LOG("ERROR: FindClass failed for DispenseTask");
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
+        return -1;
+    }
+    // #endregion debug-point jni-mem-06
+
     jfieldID binIdField = env->GetFieldID(taskClass, "binId", "I");
     jfieldID targetGramsField = env->GetFieldID(taskClass, "targetGrams", "D");
 
     jsize len = env->GetArrayLength(tasksArray);
+
+    // #region debug-point jni-mem-07
+    DEBUG_LOG("tasksArray length=" << len);
+    // #endregion debug-point jni-mem-07
+
     for (jsize i = 0; i < len; ++i) {
         jobject taskObj = env->GetObjectArrayElement(tasksArray, i);
+
+        // #region debug-point jni-mem-08
+        if (taskObj == nullptr) {
+            DEBUG_LOG("ERROR: taskObj at index " << i << " is NULL!");
+            env->DeleteLocalRef(taskClass);
+            return -1;
+        }
+        DEBUG_LOG("Processing task index=" << i << " taskObj=" << static_cast<void*>(taskObj));
+        // #endregion debug-point jni-mem-08
+
         DispenseTask task;
         task.binId = env->GetIntField(taskObj, binIdField);
         task.targetGrams = env->GetDoubleField(taskObj, targetGramsField);
@@ -365,8 +501,26 @@ JNIEXPORT jint JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_startDispense
         task.isCompleted = false;
         task.hasError = false;
         prescription.tasks.push_back(task);
+
+        // #region debug-point jni-mem-09
+        DEBUG_LOG("Task " << i << ": binId=" << task.binId 
+                  << " targetGrams=" << task.targetGrams
+                  << " tasks vector size=" << prescription.tasks.size()
+                  << " vector capacity=" << prescription.tasks.capacity());
+        // #endregion debug-point jni-mem-09
+
         env->DeleteLocalRef(taskObj);
     }
+
+    // #region debug-point jni-mem-10
+    DEBUG_LOG("All tasks parsed, total=" << prescription.tasks.size() 
+              << " calling C++ startDispense...");
+    // #endregion debug-point jni-mem-10
+
+    // #region debug-point jni-mem-11
+    env->DeleteLocalRef(taskClass);
+    DEBUG_LOG("Deleted local ref for taskClass");
+    // #endregion debug-point jni-mem-11
 
     return TCMDispenser::getInstance().startDispense(prescription);
 }
