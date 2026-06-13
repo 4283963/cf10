@@ -10,6 +10,8 @@
 #include <thread>
 #include <condition_variable>
 #include <memory>
+#include <deque>
+#include <chrono>
 
 #define DISPENSER_API extern "C" __attribute__((visibility("default")))
 
@@ -18,6 +20,12 @@ namespace tcm {
 constexpr int MAX_MEDICINE_BINS = 32;
 constexpr double SCALE_PRECISION = 0.001;
 constexpr double DEFAULT_BIN_CAPACITY = 500.0;
+constexpr double COMPENSATION_THRESHOLD = 0.2;
+constexpr int COMPENSATION_MAX_ATTEMPTS = 5;
+constexpr int BLOCKAGE_DETECT_MS = 3000;
+constexpr int BLOCKAGE_REVERSE_PULSES = 200;
+constexpr int MAX_WEIGHT_SAMPLES = 600;
+constexpr int MAX_BLOCKAGE_EVENTS = 100;
 
 struct MedicineBin {
     int id;
@@ -31,10 +39,41 @@ struct MedicineBin {
     bool isOnline;
 };
 
+enum class CompensationState {
+    IDLE = 0,
+    PRIMARY_DISPENSING = 1,
+    WEIGHING = 2,
+    COMPENSATING = 3,
+    BLOCKAGE_DETECTED = 4,
+    COMPLETED = 5,
+    FAILED = 6
+};
+
+struct WeightSample {
+    int64_t timestampMs;
+    int binId;
+    double weightGrams;
+};
+
+struct BlockageEvent {
+    int64_t timestampMs;
+    int binId;
+    std::string binName;
+    int attempt;
+    bool resolved;
+    std::string message;
+};
+
 struct DispenseTask {
     int binId;
     double targetGrams;
     double dispensedGrams;
+    double actualWeighedGrams;
+    double deficitGrams;
+    int compensationAttempts;
+    CompensationState compensationState;
+    bool blockageOccurred;
+    int blockageCount;
     bool isCompleted;
     bool hasError;
     std::string errorMessage;
@@ -77,6 +116,10 @@ public:
     DispenserStatus getStatus() const;
     std::string getLastError() const;
     
+    std::vector<WeightSample> getLatestWeightSamples(int sinceMs);
+    std::vector<BlockageEvent> getBlockageEvents(int sinceMs);
+    std::vector<DispenseTask> getCurrentTaskStatus();
+    
 private:
     TCMDispenser();
     ~TCMDispenser();
@@ -88,12 +131,25 @@ private:
     double calculatePulses(double grams, double gramsPerPulse);
     void dribbleFeed(int binId, double remainingGrams, std::shared_ptr<std::atomic<bool>> shouldStop);
     
+    double closedLoopCompensate(int binId, double targetGrams,
+                               std::shared_ptr<std::atomic<bool>> shouldStop,
+                               DispenseTask& taskResult);
+    bool detectBlockage(int binId, double referenceWeight, int durationMs,
+                        std::shared_ptr<std::atomic<bool>> shouldStop);
+    bool performReverseAntiJam(int binId, DispenseTask& taskResult);
+    
+    void addWeightSample(int binId, double grams);
+    void addBlockageEvent(int binId, const std::string& binName, int attempt, bool resolved, const std::string& msg);
+    
     void cleanupTask(int taskId);
     
     mutable std::mutex m_mutex;
     std::unordered_map<int, MedicineBin> m_bins;
     std::unordered_map<int, std::thread> m_activeTasks;
     std::unordered_map<int, std::shared_ptr<std::atomic<bool>>> m_taskStopFlags;
+    std::deque<WeightSample> m_weightSamples;
+    std::deque<BlockageEvent> m_blockageEvents;
+    std::vector<DispenseTask> m_currentTasks;
     std::atomic<DispenserStatus> m_status;
     std::atomic<int> m_nextTaskId;
     std::string m_lastError;
@@ -130,6 +186,15 @@ JNIEXPORT jboolean JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_isTaskComp
 
 JNIEXPORT jdouble JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_readScale
   (JNIEnv *, jobject, jint);
+
+JNIEXPORT jobjectArray JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_getLatestWeightSamples
+  (JNIEnv *, jobject, jint);
+
+JNIEXPORT jobjectArray JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_getBlockageEvents
+  (JNIEnv *, jobject, jint);
+
+JNIEXPORT jobjectArray JNICALL Java_com_tcm_dispenser_jni_TCMDispenserJNI_getCurrentTaskStatus
+  (JNIEnv *, jobject);
 
 }
 

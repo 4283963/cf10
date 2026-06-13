@@ -1,7 +1,9 @@
 package com.tcm.dispenser.jni;
 
+import com.tcm.dispenser.model.BlockageEvent;
 import com.tcm.dispenser.model.DispenseTask;
 import com.tcm.dispenser.model.MedicineBin;
+import com.tcm.dispenser.model.WeightSample;
 
 public class TCMDispenserJNI {
 
@@ -43,4 +45,10 @@ public class TCMDispenserJNI {
     public native boolean isTaskCompleted(int taskId);
 
     public native double readScale(int channel);
+
+    public native WeightSample[] getLatestWeightSamples(int sinceMs);
+
+    public native BlockageEvent[] getBlockageEvents(int sinceMs);
+
+    public native DispenseTask[] getCurrentTaskStatus();
 }
